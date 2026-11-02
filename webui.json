@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
-  "workspace_title": "定时提醒",
+  "workspace_title": "定時提醒",
   "pages": [
     {
       "id": "reminders",
-      "title": "定时提醒",
-      "description": "所有聊天里待触发的提醒，包括被要求的和麦麦顺手记下的；点击一行可查看详情或取消。",
+      "title": "定時提醒",
+      "description": "所有聊天待觸發的提醒，點一列可查看詳情或取消。",
       "placement": "workspace",
       "icon": "list",
       "queries": {
@@ -31,7 +31,7 @@
               "field": "id"
             }
           },
-          "confirmation": "确认取消这条提醒？取消后到点不会再唤醒麦麦。"
+          "confirmation": "確定取消這則提醒？"
         }
       },
       "content": [
@@ -41,7 +41,7 @@
           "children": [
             {
               "type": "stat",
-              "label": "待触发",
+              "label": "待觸發",
               "value": {
                 "source": "summary",
                 "field": "total"
@@ -49,7 +49,7 @@
             },
             {
               "type": "stat",
-              "label": "麦麦顺手记下",
+              "label": "順手記下",
               "value": {
                 "source": "summary",
                 "field": "followup_count"
@@ -57,7 +57,7 @@
             },
             {
               "type": "stat",
-              "label": "重复提醒",
+              "label": "重複提醒",
               "value": {
                 "source": "summary",
                 "field": "recurring_count"
@@ -65,7 +65,7 @@
             },
             {
               "type": "stat",
-              "label": "服务器当前时间",
+              "label": "伺服器目前時間",
               "value": {
                 "source": "summary",
                 "field": "now"
@@ -75,7 +75,7 @@
         },
         {
           "type": "text",
-          "value": "目前没有待触发的提醒。",
+          "value": "目前沒有待觸發的提醒。",
           "when": {
             "reference": {
               "source": "summary",
@@ -86,7 +86,7 @@
         },
         {
           "type": "table",
-          "label": "待触发的提醒（按下次提醒时间排序）",
+          "label": "待觸發的提醒（依下次提醒時間排序）",
           "value": {
             "source": "summary",
             "field": "reminders"
@@ -111,18 +111,18 @@
             },
             {
               "field": "kind",
-              "label": "类型"
+              "label": "類型"
             },
             {
               "field": "content",
-              "label": "内容"
+              "label": "內容"
             }
           ]
         },
         {
           "type": "dialog",
           "name": "reminderDetails",
-          "label": "提醒详情",
+          "label": "提醒詳情",
           "children": [
             {
               "type": "text",
@@ -144,7 +144,7 @@
             },
             {
               "type": "text",
-              "label": "类型",
+              "label": "類型",
               "value": {
                 "scope": "selection",
                 "source": "reminderRow",
@@ -171,7 +171,7 @@
             },
             {
               "type": "text",
-              "label": "内容",
+              "label": "內容",
               "value": {
                 "scope": "selection",
                 "source": "reminderRow",
@@ -180,7 +180,7 @@
             },
             {
               "type": "button",
-              "label": "取消这条提醒",
+              "label": "取消這則提醒",
               "action": "cancel",
               "variant": "danger"
             }
@@ -206,7 +206,7 @@
                     },
                     {
                       "field": "description",
-                      "label": "说明"
+                      "label": "說明"
                     }
                   ]
                 }
@@ -214,7 +214,7 @@
             },
             {
               "type": "stack",
-              "label": "麦麦的工具",
+              "label": "麥麥的工具",
               "children": [
                 {
                   "type": "table",

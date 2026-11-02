@@ -1,11 +1,11 @@
 """定时提醒插件：到点唤醒麦麦在聊天里说话，提醒保存在插件数据目录的 reminders.json，重启后继续生效。
 
 两种提醒：
-- 被要求的提醒（set_reminder）：标准 5 段 cron，一次性或重复（每天、工作日、每月 1 号等），到点一定提醒。
-- 顺手记下（remember_followup）：群友随口说到自己之后的安排时，麦麦自己记一个一次性提醒，到时像朋友一样关心一下，
-  说不说由麦麦决定。单独做成工具而不是 set_reminder 的参数，否则模型会把它当成「是不是正式提醒请求」二选一而放弃。
-到点时通过 Maisaka 主动任务唤醒麦麦，由麦麦结合人设和上下文自己说出来，而不是发送固定文本；
-离线期间错过的提醒在下次启动后补发一次并说明晚了多久。WebUI 可查看和取消所有提醒，聊天里可用 /reminders 和 /reminder_cancel。
+- 被要求的提醒（set_reminder）：标准 5 段 cron，一次性或重复，到点一定提醒。
+- 顺手记下（remember_followup）：群友随口说到自己之后的安排时，麦麦自己记一个一次性提醒，到时说不说由麦麦决定。
+  单独做成工具而不是 set_reminder 的参数，否则模型会把它当成「是不是正式提醒请求」二选一而放弃。
+到点时通过 Maisaka 主动任务唤醒麦麦，由麦麦结合人设和上下文自己说出来；离线期间错过的提醒在下次启动后补发一次。
+模型和用户看到的文字（工具说明、唤醒意图、指令回复、WebUI、配置）一律用繁体中文，保持简短。
 """
 
 from datetime import date, datetime, time, timedelta
@@ -26,14 +26,15 @@ WEEKDAYS = "一二三四五六日"
 CRON_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 # 2 月 29 日这类表达式最多四年才触发一次
 SEARCH_DAYS = 366 * 5
+FOLLOWUP = "順手記下"
 COMMANDS = [
-    {"usage": "/reminders", "description": "列出当前聊天待触发的提醒"},
-    {"usage": "/reminder_cancel <id>", "description": "取消当前聊天的一条提醒"},
+    {"usage": "/reminders", "description": "列出目前聊天待觸發的提醒"},
+    {"usage": "/reminder_cancel <id>", "description": "取消目前聊天的一則提醒"},
 ]
 TOOLS = [
-    {"name": "set_reminder", "description": "有人请麦麦提醒时设置，标准 5 段 cron，可一次性或重复"},
-    {"name": "remember_followup", "description": "群友聊到之后的安排时麦麦顺手记下，到时关心一下；可在配置里关闭"},
-    {"name": "list_reminders / cancel_reminder", "description": "麦麦查看、取消当前聊天的提醒"},
+    {"name": "set_reminder", "description": "有人請麥麥提醒時設定，可一次或重複"},
+    {"name": "remember_followup", "description": "群友聊到之後的安排時麥麥順手記下，可在設定中關閉"},
+    {"name": "list_reminders / cancel_reminder", "description": "麥麥查看、取消目前聊天的提醒"},
 ]
 
 
@@ -44,21 +45,19 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_icon__ = "package"
     __ui_order__ = 0
 
-    enabled: bool = Field(default=True, description="是否启用插件")
-    config_version: str = Field(default="1.1.0", description="配置版本")
+    enabled: bool = Field(default=True, description="是否啟用插件")
+    config_version: str = Field(default="1.1.0", description="設定版本")
 
 
 class FollowupSectionConfig(PluginConfigBase):
     """顺手记下配置。"""
 
-    __ui_label__ = "顺手记下"
+    __ui_label__ = FOLLOWUP
     __ui_icon__ = "bell"
     __ui_order__ = 1
 
-    enabled: bool = Field(
-        default=True, description="群友聊到之后的安排时，允许麦麦自己记下、到时关心一下；关闭后麦麦看不到这个工具"
-    )
-    max_per_chat: int = Field(default=3, description="每个聊天同时待触发的顺手记下上限，避免到点轮番追问")
+    enabled: bool = Field(default=True, description="允許麥麥順手記下群友之後的安排；關閉後麥麥看不到這個工具")
+    max_per_chat: int = Field(default=3, description="每個聊天同時待觸發的順手記下上限")
 
 
 class ReminderConfig(PluginConfigBase):
@@ -72,7 +71,7 @@ def parse_cron(expr: str) -> List[Set[int]]:
     """把 5 段 cron 解析成每段允许的取值集合，支持 * 、a-b、a,b 和 /步长。"""
     parts = expr.split()
     if len(parts) != 5:
-        raise ValueError(f"cron {expr!r} 必须是 5 段：分 时 日 月 星期")
+        raise ValueError(f"cron {expr!r} 必須是 5 段：分 時 日 月 星期")
     fields: List[Set[int]] = []
     for part, (low, high) in zip(parts, CRON_RANGES, strict=True):
         values: Set[int] = set()
@@ -89,9 +88,9 @@ def parse_cron(expr: str) -> List[Set[int]]:
                     end = high if step else start
                 values.update(range(start, end + 1, int(step) if step else 1))
             except ValueError:
-                raise ValueError(f"无法解析 cron 段 {item!r}") from None
+                raise ValueError(f"無法解析 cron 段 {item!r}") from None
             if not low <= start <= end <= high:
-                raise ValueError(f"cron 段 {item!r} 超出范围 {low}-{high}")
+                raise ValueError(f"cron 段 {item!r} 超出範圍 {low}-{high}")
         fields.append(values)
     if 7 in fields[4]:
         fields[4].add(0)
@@ -121,7 +120,7 @@ def next_run(fields: List[Set[int]], start: datetime) -> datetime:
                     if candidate >= start:
                         return candidate
         day += timedelta(days=1)
-    raise ValueError("这个 cron 五年内都不会触发")
+    raise ValueError("這個 cron 五年內都不會觸發")
 
 
 def parse_at(now: datetime, at: str) -> datetime:
@@ -133,12 +132,12 @@ def parse_at(now: datetime, at: str) -> datetime:
         try:
             clock = datetime.strptime(at, "%H:%M").time()
         except ValueError:
-            raise ValueError(f"无法解析时间 {at!r}，请用 HH:MM 或 YYYY-MM-DD HH:MM") from None
+            raise ValueError(f"無法解析時間 {at!r}，請用 HH:MM 或 YYYY-MM-DD HH:MM") from None
         moment = datetime.combine(now.date(), clock)
         if moment <= now:
             moment += timedelta(days=1)
     if moment <= now:
-        raise ValueError(f"{moment.strftime(TIME_FORMAT)} 已经过去")
+        raise ValueError(f"{moment.strftime(TIME_FORMAT)} 已經過去")
     return moment
 
 
@@ -151,9 +150,9 @@ def make_reminder(
 ) -> Dict[str, Any]:
     """生成一条提醒记录；没有聊天或内容为空时抛出 ValueError。"""
     if not stream_id:
-        raise ValueError("无法确定当前聊天，不能设置提醒")
+        raise ValueError("無法確定目前聊天")
     if not content.strip():
-        raise ValueError("提醒内容不能为空")
+        raise ValueError("提醒內容不能為空")
     return {
         "id": uuid4().hex[:6],
         "stream_id": stream_id,
@@ -217,19 +216,16 @@ class ReminderPlugin(MaiBotPlugin):
             scheduled = datetime.fromisoformat(reminder["due"])
             if reminder["auto"]:
                 # 没人要求过，说不说、怎么说都交给麦麦
-                intent = (
-                    f"你之前在聊天里注意到：{reminder['content']}\n现在到了这个时间。如果觉得合适，就像朋友一样"
-                    "自然地提起这个话题或关心一下，需要时可以 @ 相关的人；话题已经过去或不合适的话，也可以不说。"
-                )
+                intent = f"你之前順手記下：{reminder['content']}\n現在到時間了，覺得合適就自然地提起或關心一下，不合適也可以不說。"
             else:
                 # Maisaka 会自行决定是否回复，意图里要明确要求现在就提醒
-                intent = f"到了设定的提醒时间，请现在就在聊天里发出这条提醒：{reminder['content']}"
+                intent = f"到了設定的提醒時間，請現在就在聊天裡發出這則提醒：{reminder['content']}"
             late_minutes = int((now - scheduled).total_seconds() // 60)
             if late_minutes >= 1:
-                intent += f"\n这条提醒原定 {describe(scheduled)}，已经晚了 {late_minutes} 分钟，提醒时说明一下。"
+                intent += f"\n原定 {describe(scheduled)}，已經晚了 {late_minutes} 分鐘。"
             try:
                 result = await self.ctx.maisaka.proactive.trigger(
-                    reminder["stream_id"], intent, reason="顺手记下的事" if reminder["auto"] else "定时提醒"
+                    reminder["stream_id"], intent, reason=FOLLOWUP if reminder["auto"] else "定時提醒"
                 )
             except Exception:
                 self.ctx.logger.exception(f"提醒 {reminder['id']} 触发异常，稍后重试")
@@ -280,8 +276,8 @@ class ReminderPlugin(MaiBotPlugin):
             {
                 "id": reminder["id"],
                 "stream_id": reminder["stream_id"],
-                "kind": "顺手记下" if reminder["auto"] else "被要求",
-                "schedule": f"重复 · {reminder['cron']}" if reminder["recurring"] else "一次",
+                "kind": FOLLOWUP if reminder["auto"] else "被要求",
+                "schedule": f"重複 · {reminder['cron']}" if reminder["recurring"] else "一次",
                 "next_run": describe(datetime.fromisoformat(reminder["due"])),
                 "content": reminder["content"],
             }
@@ -293,18 +289,14 @@ class ReminderPlugin(MaiBotPlugin):
 
     @Tool(
         "set_reminder",
-        description="有人请你提醒时设置定时提醒，到点你会被唤醒，在当前聊天里发出提醒。cron 是服务器本地时间的标准 5 段表达式"
-        "「分 时 日 月 星期」（星期 0 或 7 为周日）。一次性提醒把分、时、日、月都写死并设 recurring=false，"
-        "如今天 14:30 写 \"30 14 <日> <月> *\"，几分钟后的提醒按当前时间算出具体时刻。重复提醒设 recurring=true，"
-        "如每天 9 点 \"0 9 * * *\"、工作日 9 点 \"0 9 * * 1-5\"、每月 1 号 10 点 \"0 10 1 * *\"。"
-        "返回的 next_run 是实际的下次提醒时间，请核对无误再告诉对方。群友只是说到自己的安排、没请你提醒时，"
-        "用 remember_followup。查看或取消提醒用 list_reminders / cancel_reminder。",
+        description="有人請你提醒時使用，到時你會被喚醒，在目前聊天發出提醒。cron 是伺服器本地時間的 5 段表達式"
+        "（分 時 日 月 星期），recurring=false 時只在下一次符合時提醒一次。",
         parameters={
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "要提醒谁、提醒什么，如「提醒小明三点开会」"},
-                "cron": {"type": "string", "description": "5 段 cron：分 时 日 月 星期"},
-                "recurring": {"type": "boolean", "description": "true 为按 cron 重复提醒，false 为只提醒一次"},
+                "content": {"type": "string", "description": "要提醒誰、提醒什麼"},
+                "cron": {"type": "string"},
+                "recurring": {"type": "boolean"},
             },
             "required": ["content", "cron", "recurring"],
             "additionalProperties": False,
@@ -319,7 +311,7 @@ class ReminderPlugin(MaiBotPlugin):
         now = datetime.now()
         try:
             if type(recurring) is not bool:
-                raise ValueError("recurring 必须是布尔值")
+                raise ValueError("recurring 必須是布林值")
             # 从当前这一分钟算起，模型按当前时刻写出的一次性 cron 也能立即触发
             due = next_run(parse_cron(cron), now.replace(second=0, microsecond=0))
             reminder = make_reminder(stream_id, content, due, cron=cron, recurring=recurring)
@@ -329,14 +321,13 @@ class ReminderPlugin(MaiBotPlugin):
 
     @Tool(
         "remember_followup",
-        description="群友随口说到自己之后的安排时（如「5点我要下楼摸鱼」「今晚要面试」「周末搬家」），即使不是在请你提醒，"
-        "也可以顺手记下，到时像朋友一样问一句或接个话。at 是服务器本地时间 HH:MM（下一个该时刻）或 YYYY-MM-DD HH:MM，"
-        "选你到时想问的时刻，比如事情开始或结束的时候。只记一次，不用说出来；记下的同时照常回复或不回复都行。",
+        description="群友隨口說到自己之後的安排時，即使沒明確要求也可以順手記下提醒。at 是伺服器本地時間 HH:MM 或 "
+        "YYYY-MM-DD HH:MM，選你到時想問的時刻，比如事情開始或結束的時候。只記一次，不用說出來；記下的同時照常回覆或不回覆都行。",
         parameters={
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "注意到的事和相关的人，如「Banana2556 说 5 点要下楼摸鱼」"},
-                "at": {"type": "string", "description": "到时想问的时刻，HH:MM 或 YYYY-MM-DD HH:MM"},
+                "content": {"type": "string", "description": "注意到的事和相關的人"},
+                "at": {"type": "string"},
             },
             "required": ["content", "at"],
             "additionalProperties": False,
@@ -350,9 +341,9 @@ class ReminderPlugin(MaiBotPlugin):
         limit = self.config.followup.max_per_chat
         try:
             if not self.config.followup.enabled:
-                raise ValueError("顺手记下已在配置中关闭")
+                raise ValueError("順手記下已在設定中關閉")
             if sum(r["auto"] and r["stream_id"] == stream_id for r in self._reminders) >= limit:
-                raise ValueError(f"这个聊天里已经记了 {limit} 件事，先不要再记了")
+                raise ValueError(f"這個聊天已經記了 {limit} 件事，先不要再記了")
             moment = parse_at(now, at)
             cron = f"{moment.minute} {moment.hour} {moment.day} {moment.month} *"
             reminder = make_reminder(stream_id, content, moment, cron=cron, auto=True)
@@ -362,7 +353,7 @@ class ReminderPlugin(MaiBotPlugin):
 
     @Tool(
         "list_reminders",
-        description="列出当前聊天里还没触发的提醒，包括你顺手记下的",
+        description="列出目前聊天還沒觸發的提醒",
         parameters={"type": "object", "properties": {}, "additionalProperties": False},
     )
     async def handle_list(self, stream_id: str = "", **kwargs: Any) -> Dict[str, Any]:
@@ -372,7 +363,7 @@ class ReminderPlugin(MaiBotPlugin):
 
     @Tool(
         "cancel_reminder",
-        description="按 id 取消当前聊天里的一条提醒，id 可用 list_reminders 查询",
+        description="依 id 取消目前聊天的一則提醒",
         parameters={
             "type": "object",
             "properties": {"reminder_id": {"type": "string"}},
@@ -385,40 +376,40 @@ class ReminderPlugin(MaiBotPlugin):
         del kwargs
         reminder = self._cancel(reminder_id, stream_id)
         if reminder is None:
-            return {"success": False, "error": f"当前聊天没有 id 为 {reminder_id} 的提醒"}
+            return {"success": False, "error": f"目前聊天沒有 id 為 {reminder_id} 的提醒"}
         return {"success": True, "cancelled": reminder["content"]}
 
     # ===== 聊天指令 =====
 
-    @Command("reminders", description="列出当前聊天待触发的提醒", pattern=r"^/reminders$")
+    @Command("reminders", description="列出目前聊天待觸發的提醒", pattern=r"^/reminders$")
     async def handle_list_command(self, stream_id: str = "", **kwargs: Any):
         """列出当前聊天的提醒。"""
         del kwargs
         rows = self._rows(stream_id)
         if rows:
             lines = [f"[{row['id']}] {row['next_run']} · {row['kind']} · {row['schedule']}\n{row['content']}" for row in rows]
-            text = "⏰ 待触发的提醒：\n" + "\n".join(lines) + "\n取消：/reminder_cancel <id>"
+            text = "⏰ 待觸發的提醒：\n" + "\n".join(lines) + "\n取消：/reminder_cancel <id>"
         else:
-            text = "这个聊天没有待触发的提醒"
+            text = "這個聊天沒有待觸發的提醒"
         await self.ctx.send.text(text, stream_id)
-        return True, f"列出了 {len(rows)} 条提醒", True
+        return True, f"列出了 {len(rows)} 則提醒", True
 
     @Command(
         "reminder_cancel",
-        description="取消当前聊天的一条提醒",
+        description="取消目前聊天的一則提醒",
         pattern=r"^/reminder_cancel\s+(?P<reminder_id>\w+)$",
     )
     async def handle_cancel_command(self, stream_id: str = "", **kwargs: Any):
         """按 id 取消当前聊天的提醒。"""
         reminder_id = kwargs["matched_groups"]["reminder_id"]
         reminder = self._cancel(reminder_id, stream_id)
-        text = f"已取消：{reminder['content']}" if reminder else f"这个聊天没有 id 为 {reminder_id} 的提醒"
+        text = f"已取消：{reminder['content']}" if reminder else f"這個聊天沒有 id 為 {reminder_id} 的提醒"
         await self.ctx.send.text(text, stream_id)
         return reminder is not None, text, True
 
     # ===== WebUI 页面 API =====
 
-    @API("webui_summary", description="读取所有聊天待触发的提醒、指令和工具说明", version="1")
+    @API("webui_summary", description="讀取所有聊天待觸發的提醒、指令和工具說明", version="1")
     async def webui_summary(self) -> Dict[str, Any]:
         """WebUI 显示真实聊天名称：群名，私聊显示「某某的私聊」。"""
         streams = await self.ctx.chat.get_all_streams(platform="all_platforms")
@@ -433,18 +424,18 @@ class ReminderPlugin(MaiBotPlugin):
         return {
             "now": describe(datetime.now()),
             "total": len(rows),
-            "followup_count": sum(row["kind"] == "顺手记下" for row in rows),
+            "followup_count": sum(row["kind"] == FOLLOWUP for row in rows),
             "recurring_count": sum(row["schedule"] != "一次" for row in rows),
             "reminders": rows,
             "commands": COMMANDS,
             "tools": TOOLS,
         }
 
-    @API("webui_cancel", description="取消任意聊天的一条提醒", version="1")
+    @API("webui_cancel", description="取消任意聊天的一則提醒", version="1")
     async def webui_cancel(self, reminder_id: str) -> Dict[str, Any]:
         """WebUI 管理用，不限聊天。"""
         if self._cancel(reminder_id) is None:
-            raise ValueError("提醒不存在或已经触发，请刷新页面")
+            raise ValueError("提醒不存在或已經觸發，請重新整理頁面")
         return {"cancelled": reminder_id}
 
 

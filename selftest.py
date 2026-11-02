@@ -122,7 +122,7 @@ async def check_requested(data_dir: Path) -> None:
     outcomes.extend([RuntimeError("rpc 断开"), True, True])
     await plugin.fire_due(new_year)
     assert [stream for stream, _ in calls.triggered] == ["g1", "g2"] and len(plugin._reminders) == 2
-    assert "请现在就" in calls.triggered[0][1] and "提醒大家喝水" in calls.triggered[0][1]
+    assert "請現在就" in calls.triggered[0][1] and "提醒大家喝水" in calls.triggered[0][1]
     assert "晚了" in calls.triggered[0][1] and "晚了" not in calls.triggered[1][1]
     assert plugin._reminders[1]["due"] == (new_year + timedelta(days=1)).isoformat()
     await plugin.fire_due(new_year)
@@ -152,8 +152,8 @@ async def check_followup(data_dir: Path) -> None:
 
     await plugin.fire_due(datetime.strptime(f"{tomorrow} 20:00", "%Y-%m-%d %H:%M"))
     intents = [intent for stream, intent in calls.triggered if stream == "g1"]
-    assert sum("你之前在聊天里注意到：小明说要去面试" in intent and "也可以不说" in intent for intent in intents) == 2
-    assert sum("请现在就" in intent for intent in intents) == 1 and plugin._reminders == []
+    assert sum("你之前順手記下：小明说要去面试" in intent and "也可以不說" in intent for intent in intents) == 2
+    assert sum("請現在就" in intent for intent in intents) == 1 and plugin._reminders == []
 
     # 配置热更新关闭顺手记下：禁用工具，处理器也拒绝
     plugin.set_plugin_config({"plugin": {"config_version": "1.1.0"}, "followup": {"enabled": False}})
@@ -171,10 +171,10 @@ async def check_commands_and_webui(data_dir: Path) -> None:
     second = await plugin.handle_followup("小明说今晚搬家", f"{tomorrow} 21:00", stream_id="p1")
     third = await plugin.handle_followup("未知聊天", f"{tomorrow} 22:00", stream_id="x9")
 
-    assert await plugin.handle_list_command(stream_id="g1") == (True, "列出了 1 条提醒", True)
+    assert await plugin.handle_list_command(stream_id="g1") == (True, "列出了 1 則提醒", True)
     assert calls.sent[-1][0] == "g1" and first["id"] in calls.sent[-1][1] and second["id"] not in calls.sent[-1][1]
     await plugin.handle_list_command(stream_id="g2")
-    assert calls.sent[-1] == ("g2", "这个聊天没有待触发的提醒")
+    assert calls.sent[-1] == ("g2", "這個聊天沒有待觸發的提醒")
     cancel = {"matched_groups": {"reminder_id": second["id"]}}
     assert (await plugin.handle_cancel_command(stream_id="g1", **cancel))[0] is False, "不能取消别的聊天的提醒"
     assert (await plugin.handle_cancel_command(stream_id="p1", **cancel))[0] is True
