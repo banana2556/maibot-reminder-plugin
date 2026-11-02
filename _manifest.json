@@ -1,0 +1,30 @@
+{
+  "manifest_version": 2,
+  "version": "1.0.0",
+  "name": "定时提醒",
+  "description": "按 cron 定时唤醒麦麦在当前聊天发提醒，支持一次性和每天、工作日、每月等重复提醒；麦麦也会自己记下群友之后的安排，到时自然地关心一下",
+  "author": {
+    "name": "Luca Chen",
+    "url": "https://github.com/Mai-with-u/MaiBot"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/Mai-with-u/MaiBot"
+  },
+  "host_application": {
+    "min_version": "1.3.0",
+    "max_version": "1.3.99"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "maisaka.proactive.trigger"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN"
+  },
+  "id": "luca.reminder"
+}
