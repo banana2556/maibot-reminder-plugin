@@ -391,8 +391,10 @@ class ReminderPlugin(MaiBotPlugin):
 
     @Tool(
         "remember_followup",
-        description="群友隨口說到自己之後的安排時，即使沒明確要求也可以順手記下提醒。at 是伺服器本地時間 HH:MM 或 "
-        "YYYY-MM-DD HH:MM，選你到時想問的時刻，比如事情開始或結束的時候。只記一次，不用說出來；記下的同時照常回覆或不回覆都行。",
+        description="順手記下未來的具體安排，不必等群友說『提醒我』。文字、圖片或截圖出現清楚的未來日期時間，"
+        "且對話表明有人要參與或關心此事（例如引用朋友的活動截圖說『快開始了』）時，優先呼叫 remember_followup，"
+        "不要只回覆而漏記；同一件事已記下就不要重複。圖片上的聊天時間戳、倒數計數或不確定的時間不是安排，勿記。"
+        "at 是伺服器本地時間 HH:MM 或 YYYY-MM-DD HH:MM；事情開始或結束時再關心。記下時照常回覆或不回覆，不必宣布提醒。",
         parameters={
             "type": "object",
             "properties": {
