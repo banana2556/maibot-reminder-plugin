@@ -5,6 +5,9 @@
 - 顺手记下（remember_followup）：群友随口说到自己之后的安排时，麦麦自己记一个一次性提醒，到时说不说由麦麦决定。
   单独做成工具而不是 set_reminder 的参数，否则模型会把它当成「是不是正式提醒请求」二选一而放弃。
 到点时通过 Maisaka 主动任务唤醒麦麦，由麦麦结合人设和上下文自己说出来；离线期间错过的提醒在下次启动后补发一次。
+提醒可以带一条目标消息（msg_id）：到点前把它以真实 ID 放回上下文，麦麦就能用 attach_at @ 对方（attach_at 按消息找发送者）；
+@ 人和回复哪条消息是两回事，回复目标和是否引用仍由麦麦和 Host 的引用规则决定。
+被要求的提醒尽量 @ 人，顺手记下的由麦麦自己判断要不要 @。
 模型和用户看到的文字（工具说明、唤醒意图、指令回复、WebUI、配置）一律用繁体中文，保持简短。
 """
 
@@ -46,7 +49,19 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=True, description="是否啟用插件")
-    config_version: str = Field(default="1.1.0", description="設定版本")
+    config_version: str = Field(default="1.2.0", description="設定版本")
+
+
+class ReminderSectionConfig(PluginConfigBase):
+    """提醒配置。"""
+
+    __ui_label__ = "提醒"
+    __ui_icon__ = "clock"
+    __ui_order__ = 1
+
+    drift_minutes: int = Field(
+        default=1, ge=0, description="提醒飄移（分鐘）：麥麥思考和回覆需要時間，提前這麼多分鐘開始對話"
+    )
 
 
 class FollowupSectionConfig(PluginConfigBase):
@@ -54,7 +69,7 @@ class FollowupSectionConfig(PluginConfigBase):
 
     __ui_label__ = FOLLOWUP
     __ui_icon__ = "bell"
-    __ui_order__ = 1
+    __ui_order__ = 2
 
     enabled: bool = Field(default=True, description="允許麥麥順手記下群友之後的安排；關閉後麥麥看不到這個工具")
     max_per_chat: int = Field(default=3, description="每個聊天同時待觸發的順手記下上限")
@@ -64,6 +79,7 @@ class ReminderConfig(PluginConfigBase):
     """定时提醒插件配置。"""
 
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
+    reminder: ReminderSectionConfig = Field(default_factory=ReminderSectionConfig)
     followup: FollowupSectionConfig = Field(default_factory=FollowupSectionConfig)
 
 
@@ -146,7 +162,14 @@ def describe(moment: datetime) -> str:
 
 
 def make_reminder(
-    stream_id: str, content: str, due: datetime, *, cron: str = "", recurring: bool = False, auto: bool = False
+    stream_id: str,
+    content: str,
+    due: datetime,
+    *,
+    cron: str = "",
+    recurring: bool = False,
+    auto: bool = False,
+    target: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """生成一条提醒记录；没有聊天或内容为空时抛出 ValueError。"""
     if not stream_id:
@@ -161,6 +184,7 @@ def make_reminder(
         "auto": auto,
         "content": content.strip(),
         "due": due.isoformat(timespec="seconds"),
+        "target": target,
     }
 
 
@@ -209,21 +233,63 @@ class ReminderPlugin(MaiBotPlugin):
             await asyncio.sleep(POLL_SECONDS)
             await self.fire_due(datetime.now())
 
+    async def _target(self, msg_id: str, stream_id: str) -> Optional[Dict[str, Any]]:
+        """查出 msg_id 的发送者和原文，没给 msg_id 时返回 None，查不到时抛出 ValueError 让模型改正。"""
+        if not msg_id:
+            return None
+        message = await self.ctx.message.get_by_id(msg_id, stream_id=stream_id)
+        if not isinstance(message, dict) or "success" in message:  # None 为查无此消息，带 success 的是调用失败
+            raise ValueError(f"找不到訊息 {msg_id}")
+        user_info = message["message_info"]["user_info"]
+        return {
+            "msg_id": message["message_id"],
+            "name": user_info["user_cardname"] or user_info["user_nickname"],
+            "user_info": user_info,
+            "text": message.get("processed_plain_text") or "",
+        }
+
+    async def _restore_target(self, reminder: Dict[str, Any]) -> Optional[str]:
+        """把目标消息以真实 ID 放回上下文供 attach_at 解析，原消息可能已离开 Maisaka 历史或经过重启；成功时返回对方名字。"""
+        target = reminder.get("target")  # 1.1 及更早保存的提醒没有 target
+        if not target:
+            return None
+        result = await self.ctx.maisaka.context.append(
+            reminder["stream_id"],
+            [{"type": "text", "content": target["text"] or reminder["content"]}],
+            message_id=target["msg_id"],
+            replyable=True,
+            user_info=target["user_info"],
+            source_kind="reminder_target",
+        )
+        if not result["success"]:
+            self.ctx.logger.warning(f"提醒 {reminder['id']} 的目标消息放回上下文失败，这次不 @：{result.get('error')}")
+            return None
+        return target["name"]
+
     async def fire_due(self, now: datetime) -> None:
-        """唤醒麦麦发出所有到期提醒：重复的排到下一个匹配时刻，一次性的删除；调用异常的留到下次轮询重试。"""
-        due = [reminder for reminder in self._reminders if datetime.fromisoformat(reminder["due"]) <= now]
+        """唤醒麦麦发出所有到期提醒：重复的排到下一个匹配时刻，一次性的删除；调用异常的留到下次轮询重试。
+
+        提前 drift_minutes 分钟唤醒，抵消麦麦思考和回复的耗时。
+        """
+        drift = timedelta(minutes=self.config.reminder.drift_minutes)
+        due = [reminder for reminder in self._reminders if datetime.fromisoformat(reminder["due"]) - drift <= now]
         for reminder in due:
             scheduled = datetime.fromisoformat(reminder["due"])
-            if reminder["auto"]:
-                # 没人要求过，说不说、怎么说都交给麦麦
-                intent = f"你之前順手記下：{reminder['content']}\n現在到時間了，覺得合適就自然地提起或關心一下，不合適也可以不說。"
-            else:
-                # Maisaka 会自行决定是否回复，意图里要明确要求现在就提醒
-                intent = f"到了設定的提醒時間，請現在就在聊天裡發出這則提醒：{reminder['content']}"
-            late_minutes = int((now - scheduled).total_seconds() // 60)
-            if late_minutes >= 1:
-                intent += f"\n原定 {describe(scheduled)}，已經晚了 {late_minutes} 分鐘。"
             try:
+                name = await self._restore_target(reminder)
+                if reminder["auto"]:
+                    # 没人要求过，说不说、要不要 @ 都交给麦麦
+                    intent = f"你之前順手記下：{reminder['content']}\n現在到時間了，覺得合適就自然地提起或關心一下，不合適也可以不說。"
+                    if name:
+                        intent += f"\n需要的話可以用 attach_at @ {name}（上面是對方之前的訊息）。"
+                else:
+                    # Maisaka 会自行决定是否回复，意图里要明确要求现在就提醒
+                    intent = f"到了設定的提醒時間，請現在就在聊天裡發出這則提醒：{reminder['content']}"
+                    if name:
+                        intent += f"\n發送時用 attach_at @ {name}（上面是對方之前的訊息）。"
+                late_minutes = int((now - scheduled).total_seconds() // 60)
+                if late_minutes >= 1:
+                    intent += f"\n原定 {describe(scheduled)}，已經晚了 {late_minutes} 分鐘。"
                 result = await self.ctx.maisaka.proactive.trigger(
                     reminder["stream_id"], intent, reason=FOLLOWUP if reminder["auto"] else "定時提醒"
                 )
@@ -237,7 +303,8 @@ class ReminderPlugin(MaiBotPlugin):
             if reminder not in self._reminders:  # 触发期间已被取消
                 continue
             if result["success"] and reminder["recurring"]:
-                following = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+                # 提前唤醒时 now 早于原定时刻，下一次要从原定时刻之后算起，否则同一时刻会再触发一次
+                following = max(scheduled, now.replace(second=0, microsecond=0)) + timedelta(minutes=1)
                 reminder["due"] = next_run(parse_cron(reminder["cron"]), following).isoformat(timespec="seconds")
             else:
                 self._reminders.remove(reminder)
@@ -280,6 +347,7 @@ class ReminderPlugin(MaiBotPlugin):
                 "schedule": f"重複 · {reminder['cron']}" if reminder["recurring"] else "一次",
                 "next_run": describe(datetime.fromisoformat(reminder["due"])),
                 "content": reminder["content"],
+                "target": (reminder.get("target") or {}).get("name") or "（無）",
             }
             for reminder in reminders
             if stream_id in (None, reminder["stream_id"])
@@ -297,14 +365,15 @@ class ReminderPlugin(MaiBotPlugin):
                 "content": {"type": "string", "description": "要提醒誰、提醒什麼"},
                 "cron": {"type": "string"},
                 "recurring": {"type": "boolean"},
+                "msg_id": {"type": "string", "description": "要 @ 的人的一則訊息，通常是請你提醒的那則"},
             },
-            "required": ["content", "cron", "recurring"],
+            "required": ["content", "cron", "recurring", "msg_id"],
             "additionalProperties": False,
         },
         visibility="visible",
     )
     async def handle_set(
-        self, content: str, cron: str, recurring: bool, stream_id: str = "", **kwargs: Any
+        self, content: str, cron: str, recurring: bool, msg_id: str = "", stream_id: str = "", **kwargs: Any
     ) -> Dict[str, Any]:
         """设置被要求的提醒；参数错误作为失败结果交给模型改正。"""
         del kwargs
@@ -314,7 +383,8 @@ class ReminderPlugin(MaiBotPlugin):
                 raise ValueError("recurring 必須是布林值")
             # 从当前这一分钟算起，模型按当前时刻写出的一次性 cron 也能立即触发
             due = next_run(parse_cron(cron), now.replace(second=0, microsecond=0))
-            reminder = make_reminder(stream_id, content, due, cron=cron, recurring=recurring)
+            target = await self._target(msg_id, stream_id)
+            reminder = make_reminder(stream_id, content, due, cron=cron, recurring=recurring, target=target)
         except ValueError as exc:
             return {"success": False, "error": str(exc), "now": describe(now)}
         return self._add(reminder, now)
@@ -328,13 +398,16 @@ class ReminderPlugin(MaiBotPlugin):
             "properties": {
                 "content": {"type": "string", "description": "注意到的事和相關的人"},
                 "at": {"type": "string"},
+                "msg_id": {"type": "string", "description": "相關的人的一則訊息，可不填"},
             },
             "required": ["content", "at"],
             "additionalProperties": False,
         },
         visibility="visible",
     )
-    async def handle_followup(self, content: str, at: str, stream_id: str = "", **kwargs: Any) -> Dict[str, Any]:
+    async def handle_followup(
+        self, content: str, at: str, msg_id: str = "", stream_id: str = "", **kwargs: Any
+    ) -> Dict[str, Any]:
         """顺手记下一件事；超过每个聊天的上限时拒绝。"""
         del kwargs
         now = datetime.now()
@@ -346,7 +419,8 @@ class ReminderPlugin(MaiBotPlugin):
                 raise ValueError(f"這個聊天已經記了 {limit} 件事，先不要再記了")
             moment = parse_at(now, at)
             cron = f"{moment.minute} {moment.hour} {moment.day} {moment.month} *"
-            reminder = make_reminder(stream_id, content, moment, cron=cron, auto=True)
+            target = await self._target(msg_id, stream_id)
+            reminder = make_reminder(stream_id, content, moment, cron=cron, auto=True, target=target)
         except ValueError as exc:
             return {"success": False, "error": str(exc), "now": describe(now)}
         return self._add(reminder, now)

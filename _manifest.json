@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "name": "定時提醒",
   "description": "按 cron 定時喚醒麥麥在聊天中提醒，可一次或重複；麥麥也會順手記下群友之後的安排，到時關心一下",
   "author": {
@@ -22,6 +22,8 @@
   "dependencies": [],
   "capabilities": [
     "maisaka.proactive.trigger",
+    "maisaka.context.append",
+    "message.get_by_id",
     "send.text",
     "chat.get_all_streams",
     "component.enable",

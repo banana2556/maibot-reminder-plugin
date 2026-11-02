@@ -153,6 +153,15 @@
             },
             {
               "type": "text",
+              "label": "@ 對象",
+              "value": {
+                "scope": "selection",
+                "source": "reminderRow",
+                "field": "target"
+              }
+            },
+            {
+              "type": "text",
               "label": "排程",
               "value": {
                 "scope": "selection",
