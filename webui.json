@@ -1,0 +1,243 @@
+{
+  "schema_version": 2,
+  "workspace_title": "定时提醒",
+  "pages": [
+    {
+      "id": "reminders",
+      "title": "定时提醒",
+      "description": "所有聊天里待触发的提醒，包括被要求的和麦麦顺手记下的；点击一行可查看详情或取消。",
+      "placement": "workspace",
+      "icon": "list",
+      "queries": {
+        "summary": {
+          "api": "webui_summary",
+          "version": "1"
+        }
+      },
+      "actions": {
+        "cancel": {
+          "api": "webui_cancel",
+          "version": "1",
+          "parameters": {
+            "reminder_id": {
+              "type": "string",
+              "required": true
+            }
+          },
+          "arguments": {
+            "reminder_id": {
+              "scope": "selection",
+              "source": "reminderRow",
+              "field": "id"
+            }
+          },
+          "confirmation": "确认取消这条提醒？取消后到点不会再唤醒麦麦。"
+        }
+      },
+      "content": [
+        {
+          "type": "grid",
+          "columns": 4,
+          "children": [
+            {
+              "type": "stat",
+              "label": "待触发",
+              "value": {
+                "source": "summary",
+                "field": "total"
+              }
+            },
+            {
+              "type": "stat",
+              "label": "麦麦顺手记下",
+              "value": {
+                "source": "summary",
+                "field": "followup_count"
+              }
+            },
+            {
+              "type": "stat",
+              "label": "重复提醒",
+              "value": {
+                "source": "summary",
+                "field": "recurring_count"
+              }
+            },
+            {
+              "type": "stat",
+              "label": "服务器当前时间",
+              "value": {
+                "source": "summary",
+                "field": "now"
+              }
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "value": "目前没有待触发的提醒。",
+          "when": {
+            "reference": {
+              "source": "summary",
+              "field": "reminders"
+            },
+            "operator": "empty"
+          }
+        },
+        {
+          "type": "table",
+          "label": "待触发的提醒（按下次提醒时间排序）",
+          "value": {
+            "source": "summary",
+            "field": "reminders"
+          },
+          "when": {
+            "reference": {
+              "source": "summary",
+              "field": "reminders"
+            },
+            "operator": "not_empty"
+          },
+          "selection": "reminderRow",
+          "detail": "reminderDetails",
+          "columns": [
+            {
+              "field": "next_run",
+              "label": "下次提醒"
+            },
+            {
+              "field": "chat",
+              "label": "聊天"
+            },
+            {
+              "field": "kind",
+              "label": "类型"
+            },
+            {
+              "field": "content",
+              "label": "内容"
+            }
+          ]
+        },
+        {
+          "type": "dialog",
+          "name": "reminderDetails",
+          "label": "提醒详情",
+          "children": [
+            {
+              "type": "text",
+              "label": "ID",
+              "value": {
+                "scope": "selection",
+                "source": "reminderRow",
+                "field": "id"
+              }
+            },
+            {
+              "type": "text",
+              "label": "聊天",
+              "value": {
+                "scope": "selection",
+                "source": "reminderRow",
+                "field": "chat"
+              }
+            },
+            {
+              "type": "text",
+              "label": "类型",
+              "value": {
+                "scope": "selection",
+                "source": "reminderRow",
+                "field": "kind"
+              }
+            },
+            {
+              "type": "text",
+              "label": "排程",
+              "value": {
+                "scope": "selection",
+                "source": "reminderRow",
+                "field": "schedule"
+              }
+            },
+            {
+              "type": "text",
+              "label": "下次提醒",
+              "value": {
+                "scope": "selection",
+                "source": "reminderRow",
+                "field": "next_run"
+              }
+            },
+            {
+              "type": "text",
+              "label": "内容",
+              "value": {
+                "scope": "selection",
+                "source": "reminderRow",
+                "field": "content"
+              }
+            },
+            {
+              "type": "button",
+              "label": "取消这条提醒",
+              "action": "cancel",
+              "variant": "danger"
+            }
+          ]
+        },
+        {
+          "type": "tabs",
+          "children": [
+            {
+              "type": "stack",
+              "label": "聊天指令",
+              "children": [
+                {
+                  "type": "table",
+                  "value": {
+                    "source": "summary",
+                    "field": "commands"
+                  },
+                  "columns": [
+                    {
+                      "field": "usage",
+                      "label": "指令"
+                    },
+                    {
+                      "field": "description",
+                      "label": "说明"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "stack",
+              "label": "麦麦的工具",
+              "children": [
+                {
+                  "type": "table",
+                  "value": {
+                    "source": "summary",
+                    "field": "tools"
+                  },
+                  "columns": [
+                    {
+                      "field": "name",
+                      "label": "工具"
+                    },
+                    {
+                      "field": "description",
+                      "label": "用途"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
