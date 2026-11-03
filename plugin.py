@@ -1,9 +1,9 @@
 """定时提醒插件：到点唤醒麦麦在聊天里说话，提醒保存在插件数据目录的 reminders.json，重启后继续生效。
 
 两种提醒：
-- 被要求的提醒（set_reminder）：标准 5 段 cron，一次性或重复，到点一定提醒。
-- 顺手记下（remember_followup）：群友随口说到自己之后的安排时，麦麦自己记一个一次性提醒，到时说不说由麦麦决定。
-  单独做成工具而不是 set_reminder 的参数，否则模型会把它当成「是不是正式提醒请求」二选一而放弃。
+- 被要求的提醒（reminder_set）：标准 5 段 cron，一次性或重复，到点一定提醒。
+- 顺手记下（reminder_followup）：群友随口说到自己之后的安排时，麦麦自己记一个一次性提醒，到时说不说由麦麦决定。
+  单独做成工具而不是 reminder_set 的参数，否则模型会把它当成「是不是正式提醒请求」二选一而放弃。
 到点时通过 Maisaka 主动任务唤醒麦麦，由麦麦结合人设和上下文自己说出来；离线期间错过的提醒在下次启动后补发一次。
 提醒可以带一条目标消息（msg_id）：到点前把它以真实 ID 放回上下文，麦麦就能用 attach_at @ 对方（attach_at 按消息找发送者）；
 @ 人和回复哪条消息是两回事，回复目标和是否引用仍由麦麦和 Host 的引用规则决定。
@@ -35,9 +35,9 @@ COMMANDS = [
     {"usage": "/reminder_cancel <id>", "description": "取消目前聊天的一則提醒"},
 ]
 TOOLS = [
-    {"name": "set_reminder", "description": "有人請麥麥提醒時設定，可一次或重複"},
-    {"name": "remember_followup", "description": "群友聊到之後的安排時麥麥順手記下，可在設定中關閉"},
-    {"name": "list_reminders / cancel_reminder", "description": "麥麥查看、取消目前聊天的提醒"},
+    {"name": "reminder_set", "description": "有人請麥麥提醒時設定，可一次或重複"},
+    {"name": "reminder_followup", "description": "群友聊到之後的安排時麥麥順手記下，可在設定中關閉"},
+    {"name": "reminder_list / reminder_cancel", "description": "麥麥查看、取消目前聊天的提醒"},
 ]
 
 
@@ -224,9 +224,9 @@ class ReminderPlugin(MaiBotPlugin):
         # 关闭时直接禁用工具，麦麦在 Planner 里就看不到它，不会白白调用一次再被拒绝
         component = self.ctx.component
         toggle = component.enable_component if self.config.followup.enabled else component.disable_component
-        result = await toggle(f"{self.ctx.plugin_id}.remember_followup", "tool")
+        result = await toggle(f"{self.ctx.plugin_id}.reminder_followup", "tool")
         if not result["success"]:
-            self.ctx.logger.warning(f"切换 remember_followup 工具失败：{result.get('error')}")
+            self.ctx.logger.warning(f"切换 reminder_followup 工具失败：{result.get('error')}")
 
     async def _run(self) -> None:
         while True:
@@ -356,7 +356,7 @@ class ReminderPlugin(MaiBotPlugin):
     # ===== 工具 =====
 
     @Tool(
-        "set_reminder",
+        "reminder_set",
         description="有人請你提醒時使用，到時你會被喚醒，在目前聊天發出提醒。cron 是伺服器本地時間的 5 段表達式"
         "（分 時 日 月 星期），recurring=false 時只在下一次符合時提醒一次。",
         parameters={
@@ -390,9 +390,9 @@ class ReminderPlugin(MaiBotPlugin):
         return self._add(reminder, now)
 
     @Tool(
-        "remember_followup",
+        "reminder_followup",
         description="順手記下未來的具體安排，不必等群友說『提醒我』。文字、圖片或截圖出現清楚的未來日期時間，"
-        "且對話表明有人要參與或關心此事（例如引用朋友的活動截圖說『快開始了』）時，優先呼叫 remember_followup，"
+        "且對話表明有人要參與或關心此事（例如引用朋友的活動截圖說『快開始了』）時，優先呼叫 reminder_followup，"
         "不要只回覆而漏記；同一件事已記下就不要重複。圖片上的聊天時間戳、倒數計數或不確定的時間不是安排，勿記。"
         "at 是伺服器本地時間 HH:MM 或 YYYY-MM-DD HH:MM；事情開始或結束時再關心。記下時照常回覆或不回覆，不必宣布提醒。",
         parameters={
@@ -428,8 +428,8 @@ class ReminderPlugin(MaiBotPlugin):
         return self._add(reminder, now)
 
     @Tool(
-        "list_reminders",
-        description="列出目前聊天還沒觸發的提醒",
+        "reminder_list",
+        description="查看、列出目前聊天還沒觸發的提醒和定時排程",
         parameters={"type": "object", "properties": {}, "additionalProperties": False},
     )
     async def handle_list(self, stream_id: str = "", **kwargs: Any) -> Dict[str, Any]:
@@ -438,8 +438,8 @@ class ReminderPlugin(MaiBotPlugin):
         return {"success": True, "now": describe(datetime.now()), "reminders": self._rows(stream_id)}
 
     @Tool(
-        "cancel_reminder",
-        description="依 id 取消目前聊天的一則提醒",
+        "reminder_cancel",
+        description="依 id 取消、刪除目前聊天的一則提醒或定時排程",
         parameters={
             "type": "object",
             "properties": {"reminder_id": {"type": "string"}},
@@ -470,8 +470,9 @@ class ReminderPlugin(MaiBotPlugin):
         await self.ctx.send.text(text, stream_id)
         return True, f"列出了 {len(rows)} 則提醒", True
 
+    # 组件按全名注册不分类型，指令不能和 reminder_cancel 工具同名
     @Command(
-        "reminder_cancel",
+        "reminder_cancel_command",
         description="取消目前聊天的一則提醒",
         pattern=r"^/reminder_cancel\s+(?P<reminder_id>\w+)$",
     )

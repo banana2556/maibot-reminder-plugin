@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from plugin import ReminderPlugin, describe, next_run, parse_at, parse_cron  # noqa: E402
 
 NOW = datetime(2026, 11, 2, 12, 0)  # 星期一
-FOLLOWUP_TOOL = "luca.reminder.remember_followup"
+FOLLOWUP_TOOL = "luca.reminder.reminder_followup"
 
 
 def check_parsing() -> None:
@@ -193,6 +193,13 @@ async def check_commands_and_webui(data_dir: Path) -> None:
     cancel = {"matched_groups": {"reminder_id": second["id"]}}
     assert (await plugin.handle_cancel_command(stream_id="g1", **cancel))[0] is False, "不能取消别的聊天的提醒"
     assert (await plugin.handle_cancel_command(stream_id="p1", **cancel))[0] is True
+
+    # Host 按全名注册组件、不分类型，同名会互相覆盖；工具名都带 reminder_ 前缀
+    components = plugin.get_components()
+    names = [component["name"] for component in components]
+    assert len(names) == len(set(names)), names
+    tools = {component["name"] for component in components if component["type"] == "TOOL"}
+    assert tools == {"reminder_set", "reminder_followup", "reminder_list", "reminder_cancel"}, tools
 
     summary = await plugin.webui_summary()
     assert (summary["total"], summary["followup_count"], summary["recurring_count"]) == (2, 1, 1)
