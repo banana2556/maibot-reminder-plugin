@@ -7,7 +7,8 @@
 到点时通过 Maisaka 主动任务唤醒麦麦，由麦麦结合人设和上下文自己说出来；离线期间错过的提醒在下次启动后补发一次。
 提醒可以带一条目标消息（msg_id）：到点前把它以真实 ID 放回上下文，麦麦就能用 attach_at @ 对方（attach_at 按消息找发送者）；
 @ 人和回复哪条消息是两回事，回复目标和是否引用仍由麦麦和 Host 的引用规则决定。
-被要求的提醒尽量 @ 人，顺手记下的由麦麦自己判断要不要 @。
+被要求的提醒存下谁请谁提醒、为什么，到点要求回复目标消息并 @ 人、讲清来龙去脉，免得没头没脑冒出一句；顺手记下的由麦麦自己判断要不要 @。
+顺手记下只收 24 小时内的事；两种提醒各有每个聊天的上限。
 模型和用户看到的文字（工具说明、唤醒意图、指令回复、WebUI、配置）一律用繁体中文，保持简短。
 """
 
@@ -30,13 +31,14 @@ CRON_RANGES = ((0, 59), (0, 23), (1, 31), (1, 12), (0, 7))
 # 2 月 29 日这类表达式最多四年才触发一次
 SEARCH_DAYS = 366 * 5
 FOLLOWUP = "順手記下"
+FOLLOWUP_WINDOW = timedelta(hours=24)
 COMMANDS = [
     {"usage": "/reminders", "description": "列出目前聊天待觸發的提醒"},
     {"usage": "/reminder_cancel <id>", "description": "取消目前聊天的一則提醒"},
 ]
 TOOLS = [
     {"name": "reminder_set", "description": "有人請麥麥提醒時設定，可一次或重複"},
-    {"name": "reminder_followup", "description": "群友聊到之後的安排時麥麥順手記下，可在設定中關閉"},
+    {"name": "reminder_followup", "description": "群友聊到 24 小時內的安排時麥麥順手記下，可在設定中關閉"},
     {"name": "reminder_list / reminder_cancel", "description": "麥麥查看、取消目前聊天的提醒"},
 ]
 
@@ -49,7 +51,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=True, description="是否啟用插件")
-    config_version: str = Field(default="1.2.0", description="設定版本")
+    config_version: str = Field(default="1.4.0", description="設定版本")
 
 
 class ReminderSectionConfig(PluginConfigBase):
@@ -62,6 +64,7 @@ class ReminderSectionConfig(PluginConfigBase):
     drift_minutes: int = Field(
         default=1, ge=0, description="提醒飄移（分鐘）：麥麥思考和回覆需要時間，提前這麼多分鐘開始對話"
     )
+    max_per_chat: int = Field(default=10, ge=0, description="主動設定上限：每個聊天同時待觸發、有人請麥麥設的提醒數")
 
 
 class FollowupSectionConfig(PluginConfigBase):
@@ -72,7 +75,7 @@ class FollowupSectionConfig(PluginConfigBase):
     __ui_order__ = 2
 
     enabled: bool = Field(default=True, description="允許麥麥順手記下群友之後的安排；關閉後麥麥看不到這個工具")
-    max_per_chat: int = Field(default=3, description="每個聊天同時待觸發的順手記下上限")
+    max_per_chat: int = Field(default=3, ge=0, description="被動設定上限：每個聊天同時待觸發的順手記下數")
 
 
 class ReminderConfig(PluginConfigBase):
@@ -283,10 +286,11 @@ class ReminderPlugin(MaiBotPlugin):
                     if name:
                         intent += f"\n需要的話可以用 attach_at @ {name}（上面是對方之前的訊息）。"
                 else:
-                    # Maisaka 会自行决定是否回复，意图里要明确要求现在就提醒
+                    # Maisaka 会自行决定是否回复，意图里要明确要求现在就提醒，并讲清是谁请提醒、为什么
                     intent = f"到了設定的提醒時間，請現在就在聊天裡發出這則提醒：{reminder['content']}"
                     if name:
-                        intent += f"\n發送時用 attach_at @ {name}（上面是對方之前的訊息）。"
+                        intent += f"\n用 reply 回覆上面 {name} 的那則訊息，並用 attach_at @ {name}。"
+                    intent += "\n說清楚是誰請你提醒、提醒什麼、為什麼，別只丟一句沒頭沒腦的話。"
                 late_minutes = int((now - scheduled).total_seconds() // 60)
                 if late_minutes >= 1:
                     intent += f"\n原定 {describe(scheduled)}，已經晚了 {late_minutes} 分鐘。"
@@ -362,7 +366,10 @@ class ReminderPlugin(MaiBotPlugin):
         parameters={
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "要提醒誰、提醒什麼"},
+                "content": {
+                    "type": "string",
+                    "description": "誰請你提醒誰、什麼事、為什麼，到時才看得懂前因後果（例：小明請你提醒小華交報告，老師下午收）",
+                },
                 "cron": {"type": "string"},
                 "recurring": {"type": "boolean"},
                 "msg_id": {"type": "string", "description": "要 @ 的人的一則訊息，通常是請你提醒的那則"},
@@ -375,10 +382,13 @@ class ReminderPlugin(MaiBotPlugin):
     async def handle_set(
         self, content: str, cron: str, recurring: bool, msg_id: str = "", stream_id: str = "", **kwargs: Any
     ) -> Dict[str, Any]:
-        """设置被要求的提醒；参数错误作为失败结果交给模型改正。"""
+        """设置被要求的提醒；参数错误或超过每个聊天的上限时作为失败结果交给模型改正。"""
         del kwargs
         now = datetime.now()
+        limit = self.config.reminder.max_per_chat
         try:
+            if sum(not r["auto"] and r["stream_id"] == stream_id for r in self._reminders) >= limit:
+                raise ValueError(f"這個聊天已經有 {limit} 則提醒，先取消一些再設")
             if type(recurring) is not bool:
                 raise ValueError("recurring 必須是布林值")
             # 从当前这一分钟算起，模型按当前时刻写出的一次性 cron 也能立即触发
@@ -391,9 +401,9 @@ class ReminderPlugin(MaiBotPlugin):
 
     @Tool(
         "reminder_followup",
-        description="順手記下未來的具體安排，不必等群友說『提醒我』。文字、圖片或截圖出現清楚的未來日期時間，"
+        description="順手記下 24 小時內的具體安排，不必等群友說『提醒我』。文字、圖片或截圖出現清楚的未來日期時間，"
         "且對話表明有人要參與或關心此事（例如引用朋友的活動截圖說『快開始了』）時，優先呼叫 reminder_followup，"
-        "不要只回覆而漏記；同一件事已記下就不要重複。圖片上的聊天時間戳、倒數計數或不確定的時間不是安排，勿記。"
+        "不要只回覆而漏記；同一件事已記下就不要重複。圖片上的聊天時間戳、倒數計數或不確定的時間不是安排，勿記；超過 24 小時的也不記。"
         "at 是伺服器本地時間 HH:MM 或 YYYY-MM-DD HH:MM；事情開始或結束時再關心。記下時照常回覆或不回覆，不必宣布提醒。",
         parameters={
             "type": "object",
@@ -410,7 +420,7 @@ class ReminderPlugin(MaiBotPlugin):
     async def handle_followup(
         self, content: str, at: str, msg_id: str = "", stream_id: str = "", **kwargs: Any
     ) -> Dict[str, Any]:
-        """顺手记下一件事；超过每个聊天的上限时拒绝。"""
+        """顺手记下一件事；超过每个聊天的上限或不在 24 小时内时拒绝。"""
         del kwargs
         now = datetime.now()
         limit = self.config.followup.max_per_chat
@@ -420,6 +430,8 @@ class ReminderPlugin(MaiBotPlugin):
             if sum(r["auto"] and r["stream_id"] == stream_id for r in self._reminders) >= limit:
                 raise ValueError(f"這個聊天已經記了 {limit} 件事，先不要再記了")
             moment = parse_at(now, at)
+            if moment - now > FOLLOWUP_WINDOW:
+                raise ValueError("超過 24 小時的事不記")
             cron = f"{moment.minute} {moment.hour} {moment.day} {moment.month} *"
             target = await self._target(msg_id, stream_id)
             reminder = make_reminder(stream_id, content, moment, cron=cron, auto=True, target=target)

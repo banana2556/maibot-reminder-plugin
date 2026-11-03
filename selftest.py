@@ -1,4 +1,4 @@
-"""自检：cron 与时刻解析、被要求的提醒、顺手记下及其开关和上限、到期唤醒、重复顺延、迟到说明、
+"""自检：cron 与时刻解析、被要求的提醒、顺手记下及其开关和 24 小时限制、两种提醒各自的上限、到期唤醒、重复顺延、迟到说明、
 聊天指令、WebUI 接口和落盘恢复。在 MaiBot 根目录运行：
 
 uv run python plugins/reminder/selftest.py
@@ -14,7 +14,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from plugin import ReminderPlugin, describe, next_run, parse_at, parse_cron  # noqa: E402
+from plugin import TIME_FORMAT, ReminderPlugin, describe, next_run, parse_at, parse_cron  # noqa: E402
 
 NOW = datetime(2026, 11, 2, 12, 0)  # 星期一
 FOLLOWUP_TOOL = "luca.reminder.reminder_followup"
@@ -138,6 +138,7 @@ async def check_requested(data_dir: Path) -> None:
     await plugin.fire_due(new_year)
     assert [stream for stream, _ in calls.triggered] == ["g1", "g2"] and len(plugin._reminders) == 2
     assert "請現在就" in calls.triggered[0][1] and "提醒大家喝水" in calls.triggered[0][1]
+    assert "說清楚是誰請你提醒" in calls.triggered[0][1], "没有目标消息也要讲清来龙去脉"
     assert "晚了" in calls.triggered[0][1] and "晚了" not in calls.triggered[1][1]
     assert plugin._reminders[1]["due"] == (new_year + timedelta(days=1)).isoformat()
     await plugin.fire_due(new_year)
@@ -154,18 +155,24 @@ async def check_requested(data_dir: Path) -> None:
 
 
 async def check_followup(data_dir: Path) -> None:
-    plugin, calls = make_plugin(data_dir, [], {"plugin": {"config_version": "1.2.0"}, "followup": {"max_per_chat": 2}})
+    config = {"plugin": {"config_version": "1.4.0"}, "reminder": {"max_per_chat": 1}, "followup": {"max_per_chat": 2}}
+    plugin, calls = make_plugin(data_dir, [], config)
     await plugin.on_load()
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    soon = datetime.now().replace(second=0, microsecond=0) + timedelta(hours=1)
+    at = soon.strftime(TIME_FORMAT)
     for index in range(2):
-        assert (await plugin.handle_followup(f"小明说要去面试{index}", f"{tomorrow} 20:00", stream_id="g1"))["success"]
-    assert not (await plugin.handle_followup("再记一个", f"{tomorrow} 20:00", stream_id="g1"))["success"], "超过上限"
-    assert (await plugin.handle_followup("别的群不受影响", f"{tomorrow} 20:00", stream_id="g2"))["success"]
-    assert (await plugin.handle_set("被要求的不占上限", f"0 20 {tomorrow[8:]} {int(tomorrow[5:7])} *", False,
-                                    stream_id="g1"))["success"]
+        assert (await plugin.handle_followup(f"小明说要去面试{index}", at, stream_id="g1"))["success"]
+    assert not (await plugin.handle_followup("再记一个", at, stream_id="g1"))["success"], "超过上限"
+    assert (await plugin.handle_followup("别的群不受影响", at, stream_id="g2"))["success"]
+    later = (soon + timedelta(hours=24)).strftime(TIME_FORMAT)
+    assert not (await plugin.handle_followup("超过 24 小时", later, stream_id="g3"))["success"]
+    # 两种提醒的上限分开算
+    cron = f"{soon.minute} {soon.hour} {soon.day} {soon.month} *"
+    assert (await plugin.handle_set("被要求的不占顺手记下的上限", cron, False, stream_id="g1"))["success"]
+    assert not (await plugin.handle_set("超过被要求的上限", cron, False, stream_id="g1"))["success"]
     assert not (await plugin.handle_followup("时间不对", "晚上", stream_id="g1"))["success"]
 
-    await plugin.fire_due(datetime.strptime(f"{tomorrow} 20:00", "%Y-%m-%d %H:%M"))
+    await plugin.fire_due(soon)
     intents = [intent for stream, intent in calls.triggered if stream == "g1"]
     assert sum("你之前順手記下：小明说要去面试" in intent and "也可以不說" in intent for intent in intents) == 2
     assert sum("請現在就" in intent for intent in intents) == 1 and plugin._reminders == []
@@ -174,17 +181,17 @@ async def check_followup(data_dir: Path) -> None:
     plugin.set_plugin_config({"plugin": {"config_version": "1.2.0"}, "followup": {"enabled": False}})
     await plugin.on_config_update("self", {}, "1.2.0")
     assert calls.toggles[-1] == (FOLLOWUP_TOOL, "tool", False)
-    assert not (await plugin.handle_followup("关了", f"{tomorrow} 20:00", stream_id="g1"))["success"]
+    assert not (await plugin.handle_followup("关了", at, stream_id="g1"))["success"]
     await plugin.on_unload()
 
 
 async def check_commands_and_webui(data_dir: Path) -> None:
     plugin, calls = make_plugin(data_dir, [])
     await plugin.on_load()
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    soon = datetime.now() + timedelta(hours=1)
     first = await plugin.handle_set("提醒大家开会", "0 9 * * 1-5", True, stream_id="g1")
-    second = await plugin.handle_followup("小明说今晚搬家", f"{tomorrow} 21:00", stream_id="p1")
-    third = await plugin.handle_followup("未知聊天", f"{tomorrow} 22:00", stream_id="x9")
+    second = await plugin.handle_followup("小明说今晚搬家", soon.strftime(TIME_FORMAT), stream_id="p1")
+    third = await plugin.handle_followup("未知聊天", (soon + timedelta(hours=1)).strftime(TIME_FORMAT), stream_id="x9")
 
     assert await plugin.handle_list_command(stream_id="g1") == (True, "列出了 1 則提醒", True)
     assert calls.sent[-1][0] == "g1" and first["id"] in calls.sent[-1][1] and second["id"] not in calls.sent[-1][1]
@@ -217,27 +224,31 @@ async def check_commands_and_webui(data_dir: Path) -> None:
 
 
 async def check_target_and_drift(data_dir: Path) -> None:
-    plugin, calls = make_plugin(data_dir, [], {"plugin": {"config_version": "1.2.0"}, "reminder": {"drift_minutes": 2}})
+    plugin, calls = make_plugin(data_dir, [], {"plugin": {"config_version": "1.4.0"}, "reminder": {"drift_minutes": 2}})
     await plugin.on_load()
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    # 每天的提醒排在两件顺手记下之前，提前唤醒时不会顺带触发它们
+    start = datetime.now().replace(second=0, microsecond=0)
+    daily_at, move_at, plain_at = (start + timedelta(minutes=minutes) for minutes in (30, 60, 120))
 
     # 被要求的提醒带 msg_id：查出发送者；查不到时报错让模型改正
-    assert not (await plugin.handle_set("开会", "0 9 * * *", True, msg_id="missing", stream_id="g1"))["success"]
-    daily = await plugin.handle_set("提醒小明开会", "0 9 * * *", True, msg_id="m1", stream_id="g1")
-    followup = await plugin.handle_followup("小明说今晚搬家", f"{tomorrow} 21:00", msg_id="m1", stream_id="g1")
-    plain = await plugin.handle_followup("没有对象", f"{tomorrow} 22:00", stream_id="g1")
+    daily_cron = f"{daily_at.minute} {daily_at.hour} * * *"
+    assert not (await plugin.handle_set("开会", daily_cron, True, msg_id="missing", stream_id="g1"))["success"]
+    daily = await plugin.handle_set("提醒小明开会", daily_cron, True, msg_id="m1", stream_id="g1")
+    followup = await plugin.handle_followup("小明说今晚搬家", move_at.strftime(TIME_FORMAT), msg_id="m1", stream_id="g1")
+    plain = await plugin.handle_followup("没有对象", plain_at.strftime(TIME_FORMAT), stream_id="g1")
     assert daily["success"] and followup["success"] and plain["success"]
     targets = {row["id"]: row["target"] for row in plugin._rows()}
     assert targets == {daily["id"]: "小明", followup["id"]: "小明", plain["id"]: "（無）"}
 
-    # 提前 2 分钟唤醒：差 3 分钟不触发，差 2 分钟触发；目标消息以真实 ID 放回上下文，意图要求 @ 对方
+    # 提前 2 分钟唤醒：差 3 分钟不触发，差 2 分钟触发；目标消息以真实 ID 放回上下文，意图要求回复并 @ 对方、讲清来龙去脉
     scheduled = datetime.fromisoformat(next(r for r in plugin._reminders if r["id"] == daily["id"])["due"])
     await plugin.fire_due(scheduled - timedelta(minutes=3))
     assert calls.triggered == []
     await plugin.fire_due(scheduled - timedelta(minutes=2))
     assert calls.appended[-1][0] == "g1" and calls.appended[-1][1] == [{"type": "text", "content": "9 點提醒我開會"}]
     assert calls.appended[-1][2]["message_id"] == "m1" and calls.appended[-1][2]["replyable"] is True
-    assert "發送時用 attach_at @ 小明" in calls.triggered[-1][1] and "晚了" not in calls.triggered[-1][1]
+    assert "用 reply 回覆上面 小明 的那則訊息，並用 attach_at @ 小明" in calls.triggered[-1][1]
+    assert "說清楚是誰請你提醒" in calls.triggered[-1][1] and "晚了" not in calls.triggered[-1][1]
     # 重复提醒提前触发后排到下一天，不会在原定时刻再触发一次
     due_after = datetime.fromisoformat(next(r for r in plugin._reminders if r["id"] == daily["id"])["due"])
     assert due_after == scheduled + timedelta(days=1)
@@ -248,14 +259,14 @@ async def check_target_and_drift(data_dir: Path) -> None:
     calls.append_ok = False
     plugin._reminders.append({**plugin._reminders[-1], "id": "old001"})
     del plugin._reminders[-1]["target"]
-    await plugin.fire_due(datetime.strptime(f"{tomorrow} 22:00", "%Y-%m-%d %H:%M"))
+    await plugin.fire_due(plain_at)
     intents = {intent.split("\n")[0]: intent for _, intent in calls.triggered[1:]}
     assert "@" not in intents["你之前順手記下：小明说今晚搬家"]
     assert "@" not in intents["你之前順手記下：没有对象"]
     calls.append_ok = True
     restored, restored_calls = make_plugin(data_dir, [])
-    restored._reminders = [{**plugin._reminders[0], "due": f"{tomorrow}T21:00:00", "auto": True, "recurring": False}]
-    await restored.fire_due(datetime.strptime(f"{tomorrow} 21:00", "%Y-%m-%d %H:%M"))
+    restored._reminders = [{**plugin._reminders[0], "due": move_at.isoformat(), "auto": True, "recurring": False}]
+    await restored.fire_due(move_at)
     assert "需要的話可以用 attach_at @ 小明" in restored_calls.triggered[-1][1]
     await plugin.on_unload()
 
